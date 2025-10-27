@@ -6,6 +6,8 @@
 #include <cmath>
 #include <vector>
 
+extern void opaque(uint64_t);
+
 #define DEFAULT_BUFFER_SIZE (8 * 8 * 10000)
 
 static uint64_t* buffer = nullptr;
@@ -34,6 +36,9 @@ void free_cache() {
 float func() {
     std::cout << std::fixed << std::setprecision(16);
 
+    double prev_time = 0.0;
+    bool first_iteration = true;
+
     for (size_t step = 1; step < 1024; step *= 2) {
         prepare_cache(step);
 
@@ -44,15 +49,30 @@ float func() {
         acc += buffer[idx];
         idx = buffer[idx];
         do {
-            // std::cout << idx << std::endl;
             acc += buffer[idx];
             idx = buffer[idx];
+            opaque(acc);
         } while (idx != 0);
         const auto end = std::chrono::steady_clock::now();
 
         const std::chrono::duration<double> diff = end - start;
-        std::cout << "STRIDE: " << std::setw(5) << step << " COUNT: " << std::setw(7) << count << " TIME : " << std::setw(15) << diff.count() << std::endl;
+        double current_time = diff.count();
+        
+        std::cout << "STRIDE: " << std::setw(5) << step 
+                  << " COUNT: " << std::setw(7) << count 
+                  << " TIME : " << std::setw(15) << current_time;
+        
+        if (!first_iteration) {
+            double percent_increase = ((current_time - prev_time) / prev_time) * 100.0;
+            std::cout << " (+" << std::setw(6) << std::setprecision(2) << percent_increase << "%)";
+            std::cout << std::fixed << std::setprecision(16); // Восстанавливаем точность
+        } else {
+            std::cout << " (base)";
+            first_iteration = false;
+        }
+        std::cout << std::endl;
 
+        prev_time = current_time;
         free_cache();
     }
 
