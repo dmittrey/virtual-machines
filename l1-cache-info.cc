@@ -33,7 +33,7 @@ void free_cache() {
     free((void*)buffer);
 }
 
-float func() {
+uint32_t calculate_coherence_size() {
     std::cout << std::fixed << std::setprecision(16);
 
     double prev_time = 0.0;
@@ -45,7 +45,7 @@ float func() {
         prepare_cache(step);
 
         const auto start = std::chrono::steady_clock::now();
-        for (int i = 0; i < 100; i++) {
+        for (int i = 0; i < 10000; i++) {
             size_t idx = 0;
             uint64_t acc = 0;
             acc += buffer[idx];
@@ -67,8 +67,13 @@ float func() {
         
         if (!first_iteration) {
             double percent_increase = ((current_time - prev_time) / prev_time) * 100.0;
-            if (percent_increase >= 50 && cache_size == 0)
+            if (percent_increase >= 50 && cache_size == 0) {
                 cache_size = step * sizeof(uint64_t);
+                std::cout << " (+" << std::setw(6) << std::setprecision(2) << percent_increase << "%)";
+                std::cout << std::endl;
+                free_cache();
+                break;
+            }
             std::cout << " (+" << std::setw(6) << std::setprecision(2) << percent_increase << "%)";
             std::cout << std::fixed << std::setprecision(16); // Восстанавливаем точность
         } else {
@@ -81,11 +86,9 @@ float func() {
         free_cache();
     }
 
-    std::cout << "COHERENCE CACHE SIZE: " << cache_size << std::endl;
-
-    return 0;
+    return cache_size;
 }
 
 int main() {
-    func();
+    std::cout << "COHERENCE CACHE SIZE: " << calculate_coherence_size() << std::endl;
 }
