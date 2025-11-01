@@ -8,33 +8,38 @@
 
 extern void opaque(uint64_t);
 
-#define DEFAULT_BUFFER_SIZE (8 * 8 * 10000)
+#define DEFAULT_BUF_SIZE (10000 * sizeof(uint64_t))
 
-static uint64_t* buffer = nullptr;
+#define MEASURE_TIME(var_name, code) \
+    const auto start = std::chrono::steady_clock::now(); \
+    code \
+    const auto end = std::chrono::steady_clock::now(); \
+    const double var_name = (end - start).count()
 
-static size_t count = 0;
+#define FORMAT_SIZE(buf_size) \
+    ((buf_size) < 1024 ? std::to_string(buf_size) + " B" : \
+     (buf_size) < 1024 * 1024 ? std::to_string((buf_size) / 1024) + " KB" : \
+     std::to_string((buf_size) / (1024 * 1024)) + " MB")
 
-void prepare_cache(size_t N) {
-    size_t BUFFER_SIZE = DEFAULT_BUFFER_SIZE * N;
-    size_t WORD_NUM = BUFFER_SIZE / sizeof(uint64_t);
+static uint64_t* buf = nullptr;
 
-    buffer = (uint64_t*)malloc(BUFFER_SIZE);
-    count = 0;
+void prepare_sequence_cyclic_buffer(size_t stride) {
+    size_t BUF_SIZE = DEFAULT_BUF_SIZE * stride;
+    size_t WORD_NUM = BUF_SIZE / sizeof(uint64_t);
+
+    buf = (uint64_t*)malloc(BUF_SIZE);
     
     // Инициализируем циклический буффер
-    for (size_t i = 0; i < WORD_NUM; i += N) {
-        buffer[i] = i + N;
-        count++;
+    for (size_t i = 0; i < WORD_NUM; i += stride) {
+        buf[i] = i + stride;
     }
-    buffer[WORD_NUM - N] = 0;
+    buf[WORD_NUM - stride] = 0;
 }
 
-void prepare_buffer1(size_t buf_size) {
+void prepare_random_cyclic_buffer(size_t buf_size) {
     size_t WORD_NUM = buf_size / sizeof(uint64_t);
 
-
-    buffer = (uint64_t*)malloc(buf_size);
-    count = 0;
+    buf = (uint64_t*)malloc(buf_size);
     
     // Создаем случайный паттерн обхода (перемешанный linked list)
     std::vector<size_t> indices(WORD_NUM);
@@ -50,159 +55,135 @@ void prepare_buffer1(size_t buf_size) {
     
     // Создаем циклический список со случайным порядком
     for (size_t i = 0; i < WORD_NUM - 1; i++) {
-        buffer[indices[i]] = indices[i + 1];
+        buf[indices[i]] = indices[i + 1];
     }
-    buffer[indices[WORD_NUM - 1]] = indices[0];
+    buf[indices[WORD_NUM - 1]] = indices[0];
 }
-
 
 void free_cache() {
-    free((void*)buffer);
+    free((void*)buf);
 }
 
-
-size_t calculate_coherence_size() {
-    std::cout << std::fixed << std::setprecision(16);
-
-    double prev_time = 0.0;
+static size_t data_size() {
     bool first_iteration = true;
 
-    size_t cache_size = 0;
+    double prev_time = 0.0;
 
-    for (size_t step = 1; step < 1024; step *= 2) {
-        prepare_cache(step);
+    std::cout << std::fixed << std::setprecision(16);
 
-        const auto start = std::chrono::steady_clock::now();
-        for (int i = 0; i < 10000; i++) {
-            size_t idx = 0;
-            uint64_t acc = 0;
-            acc += buffer[idx];
-            idx = buffer[idx];
-            do {
-                acc += buffer[idx];
-                idx = buffer[idx];
-                opaque(acc);
-            } while (idx != 0);
-        }
-        const auto end = std::chrono::steady_clock::now();
+    for (size_t stride = 1; stride < 1024; stride *= 2) {
+        prepare_sequence_cyclic_buffer(stride);
 
-        const std::chrono::duration<double> diff = end - start;
-        double current_time = diff.count();
-        
-        std::cout << "STRIDE: " << std::setw(5) << step 
-                  << " COUNT: " << std::setw(7) << count 
-                  << " TIME : " << std::setw(15) << current_time;
-        
-        if (!first_iteration) {
-            double percent_increase = ((current_time - prev_time) / prev_time) * 100.0;
-            if (percent_increase >= 50 && cache_size == 0) {
-                cache_size = step * sizeof(uint64_t);
-                std::cout << " (+" << std::setw(6) << std::setprecision(2) << percent_increase << "%)";
-                std::cout << std::endl;
-                free_cache();
-                break;
+        MEASURE_TIME(current_time, {
+            for (int i = 0; i < 10000; i++) {
+                size_t idx = buf[0];
+                opaque(buf[idx]);
+                do {
+                    idx = buf[idx];
+                    opaque(buf[idx]);
+                } while (idx != 0);
             }
+        });
+        
+        std::cout << std::fixed << std::setprecision(16)
+                  << "STRIDE: " << std::setw(5) << stride
+                  << " TIME : " << std::setw(15) << current_time;
+
+        // Сравнительные итерации
+        if (!first_iteration) {
+            // Сравнение с первой итерацией
+            double percent_increase = ((current_time - prev_time) / prev_time) * 100.0;
             std::cout << " (+" << std::setw(6) << std::setprecision(2) << percent_increase << "%)";
             std::cout << std::fixed << std::setprecision(16); // Восстанавливаем точность
-        } else {
+
+            if (percent_increase >= 50) {
+                std::cout << std::endl;
+                free_cache();
+
+                return stride * sizeof(uint64_t);
+            }
+        }
+        
+        // Первая итерация
+        if (first_iteration) {
             std::cout << " (base)";
             first_iteration = false;
+            prev_time = current_time;
         }
-        std::cout << std::endl;
 
-        prev_time = current_time;
+        std::cout << std::endl;
         free_cache();
     }
 
-    return cache_size;
+    return 0;
 }
 
-size_t func(size_t coherence_size) {
-    double prev_time = 0.0;
+static size_t capacity(size_t line_data_size) {
     bool first_iteration = true;
 
-    size_t boundary = 0;
+    double prev_time = 0.0;
 
     std::cout << std::fixed << std::setprecision(16);
 
-    // Начинаем с размера кэш-линии и увеличиваем до нескольких МБ
-    for (size_t buf_size = coherence_size; buf_size <= 32 * 1024 * 1024; buf_size *= 2) {
+    // Начинаем с размера кэш-линии и увеличиваем до 64 МБ(эвристика)
+    for (size_t buf_size = line_data_size; buf_size <= 64 * 1024 * 1024; buf_size *= 2) {        
+        prepare_random_cyclic_buffer(buf_size);
+
         size_t WORD_NUM = buf_size / sizeof(uint64_t);
-        
-        prepare_buffer1(buf_size);
+        MEASURE_TIME(time, {
+            size_t idx = 0;
+            opaque(buf[idx]);
+            for (size_t i = 0; i < WORD_NUM; i++) {
+                idx = buf[idx];
+                opaque(buf[idx]);
+            }
+        });
 
-        // Определяем количество итераций для достаточно долгого измерения
-        size_t iterations = std::max(1000000UL, 10 * 1024 * 1024 / WORD_NUM);
-
-        const auto start = std::chrono::steady_clock::now();
-        
-        size_t idx = 0;
-        uint64_t acc = 0;
-        for (size_t i = 0; i < iterations; i++) {
-            acc += buffer[idx];
-            idx = buffer[idx];
-        }
-        opaque(acc);
-        
-        const auto end = std::chrono::steady_clock::now();
-
-        const std::chrono::duration<double> diff = end - start;
         // Нормализуем на количество доступов, получаем время на один доступ
-        double time_per_access = diff.count() / iterations;
+        double time_per_access = time / WORD_NUM;
 
         // Форматируем размер буфера для вывода
-        std::string size_str;
-        if (buf_size < 1024) {
-            size_str = std::to_string(buf_size) + " B";
-        } else if (buf_size < 1024 * 1024) {
-            size_str = std::to_string(buf_size / 1024) + " KB";
-        } else {
-            size_str = std::to_string(buf_size / (1024 * 1024)) + " MB";
-        }
+        std::string size_str = FORMAT_SIZE(buf_size);
 
         std::cout << "SIZE: " << std::setw(10) << size_str
                   << " TIME/ACCESS: " << std::setw(15) << time_per_access;
 
+        // Сравнительные итерации
         if (!first_iteration) {
+            // Сравнение с предыдущей итерацией
             double percent_increase = ((time_per_access - prev_time) / prev_time) * 100.0;
-            std::cout << " (+" << std::setw(7) << std::setprecision(2) << percent_increase << "%)";
-            std::cout << std::fixed << std::setprecision(16);
-            
-            // Автоматическое определение границ кэшей
-            if (percent_increase > 30.0) {
+            std::cout << " (+" << std::setw(6) << std::setprecision(2) << percent_increase << "%)";
+            std::cout << std::fixed << std::setprecision(16); // Восстанавливаем точность
+
+            if (percent_increase >= 30) {
                 std::cout << std::endl;
                 free_cache();
                 // If reach boundary => last step was legal
                 return buf_size / 2;
             }
-        } else {
+        }
+
+        if (first_iteration) {
             std::cout << " (base)";
             first_iteration = false;
         }
+
         std::cout << std::endl;
+        free_cache();
 
         prev_time = time_per_access;
-        free_cache();
     }
     return 0;
 }
 
 
 int main() {
-    size_t csize = calculate_coherence_size();
-    // size_t csize = 64;
+    size_t csize = data_size();
     std::cout << "COHERENCE CACHE SIZE: " << csize << std::endl;
     std::cout << std::endl;
 
-    size_t bsize = func(csize);
+    //TODO несколько раз посчитать
+    size_t bsize = capacity(csize);
 
-    std::string size_str;
-        if (bsize < 1024) {
-            size_str = std::to_string(bsize) + " B";
-        } else if (bsize < 1024 * 1024) {
-            size_str = std::to_string(bsize / 1024) + " KB";
-        } else {
-            size_str = std::to_string(bsize / (1024 * 1024)) + " MB";
-        }
-    std::cout << "CAPACITY: " << std::setw(10) << size_str << std::endl;
+    std::cout << "CAPACITY: " << std::setw(10) << FORMAT_SIZE(bsize) << std::endl;
 }
