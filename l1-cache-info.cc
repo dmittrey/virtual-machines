@@ -5,6 +5,7 @@
 #include <iomanip>
 #include <cmath>
 #include <vector>
+#include <unordered_map>
 
 extern void opaque(uint64_t);
 
@@ -176,14 +177,45 @@ static size_t capacity(size_t line_data_size) {
     return 0;
 }
 
+static size_t round_to_pow2(size_t value) {
+    size_t lower = 1;
+    while (lower * 2 <= value)
+        lower *= 2;
+    size_t upper = lower * 2;
+    // При равенстве дистанций выбираем меньший
+    return (value - lower <= upper - value) ? lower : upper;
+}
+
+static size_t high_precise_capacity(size_t csize) {
+    const int ITERATIONS = 1000;
+    std::vector<size_t> results;
+
+    for (int i = 0; i < ITERATIONS; i++)
+        results.push_back(capacity(csize));
+
+    std::unordered_map<size_t, size_t> freq;
+    for (size_t r : results) 
+        freq[r]++;
+
+    double weighted_sum = 0.0;
+    size_t total_count = 0;
+    for (auto& [val, count] : freq) {
+        weighted_sum += (double)val * count;
+        total_count += count;
+    }
+
+    double weighted_avg = weighted_sum / total_count;
+    return round_to_pow2((size_t)weighted_avg);
+}
 
 int main() {
     size_t csize = data_size();
-    std::cout << "COHERENCE CACHE SIZE: " << csize << std::endl;
-    std::cout << std::endl;
 
-    //TODO несколько раз посчитать
-    size_t bsize = capacity(csize);
+    size_t capacity = high_precise_capacity(csize);
 
-    std::cout << "CAPACITY: " << std::setw(10) << FORMAT_SIZE(bsize) << std::endl;
+    std::cout << "\n========== RESULTS ==========\n";
+    std::cout << "CAPACITY (WEIGHTED AVG):" << std::setw(10)
+              << FORMAT_SIZE(capacity) << std::endl;
+    std::cout << "COHERENCE CACHE SIZE:" << std::setw(12)
+              << FORMAT_SIZE(csize) << std::endl;
 }
