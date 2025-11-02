@@ -9,8 +9,6 @@
 
 extern void opaque(uint64_t);
 
-#define DEFAULT_BUF_SIZE (10000 * sizeof(uint64_t))
-
 #define MEASURE_TIME(var_name, code) \
     const auto start_##var_name = std::chrono::steady_clock::now(); \
     code \
@@ -22,191 +20,195 @@ extern void opaque(uint64_t);
      (buf_size) < 1024 * 1024 ? std::to_string((buf_size) / 1024) + " KB" : \
      std::to_string((buf_size) / (1024 * 1024)) + " MB")
 
-static uint64_t* buf = nullptr;
+/*
+ * @property transitions_count - Кол-во переходов в буфере
+ * @property stride - Который элемент следующий
+ * stride = 4
+ * 0-1-2-3-4-5-6-7-8
+ * |       |       |
+ * ------------------
+ */
+size_t* sequence_cyclic_buffer(size_t transitions_count, size_t stride) {
+    // Создаем буффер чтобы вместить столько элементов сколько хотим переходов + компенсируем пропуски stride
+    size_t buf_size = transitions_count * sizeof(size_t) * stride;
 
-void prepare_sequence_cyclic_buffer(size_t stride) {
-    size_t BUF_SIZE = DEFAULT_BUF_SIZE * stride;
-    size_t WORD_NUM = BUF_SIZE / sizeof(uint64_t);
-
-    buf = (uint64_t*)malloc(BUF_SIZE);
+    size_t *buf = (size_t*)malloc(buf_size);
     
     // Инициализируем циклический буффер
-    for (size_t i = 0; i < WORD_NUM; i += stride) {
+    size_t word_cnt = buf_size / sizeof(size_t);
+    for (size_t i = 0; i < word_cnt; i += stride) {
         buf[i] = i + stride;
     }
-    buf[WORD_NUM - stride] = 0;
+    // Замыкаем
+    buf[word_cnt - stride] = 0;
+    return buf;
 }
 
-void prepare_random_cyclic_buffer(size_t buf_size) {
-    size_t WORD_NUM = buf_size / sizeof(uint64_t);
+static size_t cache_line_length() {
+    const size_t DEFAULT_TRANSITION_COUNT = 100 * 1000;
+    double first_time = 0.0;
 
-    buf = (uint64_t*)malloc(buf_size);
-    
-    // Создаем случайный паттерн обхода (перемешанный linked list)
-    std::vector<size_t> indices(WORD_NUM);
-    for (size_t i = 0; i < WORD_NUM; i++) {
-        indices[i] = i;
-    }
-    
-    // Перемешиваем индексы
-    for (size_t i = WORD_NUM - 1; i > 0; i--) {
-        size_t j = rand() % (i + 1);
-        std::swap(indices[i], indices[j]);
-    }
-    
-    // Создаем циклический список со случайным порядком
-    for (size_t i = 0; i < WORD_NUM - 1; i++) {
-        buf[indices[i]] = indices[i + 1];
-    }
-    buf[indices[WORD_NUM - 1]] = indices[0];
-}
+    for (size_t stride = 1; stride < 2048; stride *= 2) {
+        size_t *buf = sequence_cyclic_buffer(DEFAULT_TRANSITION_COUNT, stride);
+        std::cout << "Hello" << std::endl;
 
-void free_cache() {
-    free((void*)buf);
-}
-
-static size_t data_size() {
-    bool first_iteration = true;
-
-    double prev_time = 0.0;
-
-    std::cout << std::fixed << std::setprecision(16);
-
-    for (size_t stride = 1; stride < 1024; stride *= 2) {
-        prepare_sequence_cyclic_buffer(stride);
-
-        MEASURE_TIME(current_time, {
-            for (int i = 0; i < 10000; i++) {
+        MEASURE_TIME(measure_time, {
+            for (int i = 0; i < 1000; i++) {
                 size_t idx = buf[0];
                 opaque(buf[idx]);
+                // buf[0] = idx;
                 do {
                     idx = buf[idx];
                     opaque(buf[idx]);
+                    // buf[idx] = idx;
                 } while (idx != 0);
             }
         });
         
         std::cout << std::fixed << std::setprecision(16)
                   << "STRIDE: " << std::setw(5) << stride
-                  << " TIME : " << std::setw(15) << current_time;
+                  << " TIME : " << std::setw(15) << measure_time / (DEFAULT_TRANSITION_COUNT * 1000);
 
         // Сравнительные итерации
-        if (!first_iteration) {
+        if (first_time) {
             // Сравнение с первой итерацией
-            double percent_increase = ((current_time - prev_time) / prev_time) * 100.0;
+            double percent_increase = ((measure_time - first_time) / first_time) * 100.0;
             std::cout << " (+" << std::setw(6) << std::setprecision(2) << percent_increase << "%)";
-            std::cout << std::fixed << std::setprecision(16); // Восстанавливаем точность
 
-            if (percent_increase >= 50) {
+            // В два раза вырос latency
+            if (percent_increase >= 100) {
                 std::cout << std::endl;
-                free_cache();
+                free(buf);
 
-                return stride * sizeof(uint64_t);
+                return stride * sizeof(size_t);
             }
         }
         
         // Первая итерация
-        if (first_iteration) {
+        if (!first_time) {
             std::cout << " (base)";
-            first_iteration = false;
-            prev_time = current_time;
+            first_time = measure_time;
         }
 
         std::cout << std::endl;
-        free_cache();
+        free(buf);
     }
 
     return 0;
 }
 
-static size_t capacity(size_t line_data_size) {
-    bool first_iteration = true;
+// void prepare_random_cyclic_buffer(size_t buf_size) {
+//     size_t WORD_NUM = buf_size / sizeof(uint64_t);
 
-    double prev_time = 0.0;
+//     buf = (uint64_t*)malloc(buf_size);
+    
+//     // Создаем случайный паттерн обхода (перемешанный linked list)
+//     std::vector<size_t> indices(WORD_NUM);
+//     for (size_t i = 0; i < WORD_NUM; i++) {
+//         indices[i] = i;
+//     }
+    
+//     // Перемешиваем индексы
+//     for (size_t i = WORD_NUM - 1; i > 0; i--) {
+//         size_t j = rand() % (i + 1);
+//         std::swap(indices[i], indices[j]);
+//     }
+    
+//     // Создаем циклический список со случайным порядком
+//     for (size_t i = 0; i < WORD_NUM - 1; i++) {
+//         buf[indices[i]] = indices[i + 1];
+//     }
+//     buf[indices[WORD_NUM - 1]] = indices[0];
+// }
 
-    std::cout << std::fixed << std::setprecision(16);
+// static size_t capacity(size_t line_data_size) {
+//     bool first_iteration = true;
 
-    // Начинаем с размера кэш-линии и увеличиваем до 64 МБ(эвристика)
-    for (size_t buf_size = line_data_size; buf_size <= 64 * 1024 * 1024; buf_size *= 2) {        
-        prepare_random_cyclic_buffer(buf_size);
+//     double prev_time = 0.0;
 
-        size_t WORD_NUM = buf_size / sizeof(uint64_t);
-        MEASURE_TIME(time, {
-            size_t idx = 0;
-            opaque(buf[idx]);
-            for (size_t i = 0; i < WORD_NUM; i++) {
-                idx = buf[idx];
-                opaque(buf[idx]);
-            }
-        });
+//     std::cout << std::fixed << std::setprecision(16);
 
-        // Нормализуем на количество доступов, получаем время на один доступ
-        double time_per_access = time / WORD_NUM;
+//     // Начинаем с размера кэш-линии и увеличиваем до 64 МБ(эвристика)
+//     for (size_t buf_size = line_data_size; buf_size <= 64 * 1024 * 1024; buf_size *= 2) {        
+//         prepare_random_cyclic_buffer(buf_size);
 
-        // Форматируем размер буфера для вывода
-        std::string size_str = FORMAT_SIZE(buf_size);
+//         size_t WORD_NUM = buf_size / sizeof(uint64_t);
+//         MEASURE_TIME(time, {
+//             size_t idx = 0;
+//             opaque(buf[idx]);
+//             for (size_t i = 0; i < WORD_NUM; i++) {
+//                 idx = buf[idx];
+//                 opaque(buf[idx]);
+//             }
+//         });
 
-        std::cout << "SIZE: " << std::setw(10) << size_str
-                  << " TIME/ACCESS: " << std::setw(15) << time_per_access;
+//         // Нормализуем на количество доступов, получаем время на один доступ
+//         double time_per_access = time / WORD_NUM;
 
-        // Сравнительные итерации
-        if (!first_iteration) {
-            // Сравнение с предыдущей итерацией
-            double percent_increase = ((time_per_access - prev_time) / prev_time) * 100.0;
-            std::cout << " (+" << std::setw(6) << std::setprecision(2) << percent_increase << "%)";
-            std::cout << std::fixed << std::setprecision(16); // Восстанавливаем точность
+//         // Форматируем размер буфера для вывода
+//         std::string size_str = FORMAT_SIZE(buf_size);
 
-            if (percent_increase >= 30) {
-                std::cout << std::endl;
-                free_cache();
-                // If reach boundary => last step was legal
-                return buf_size / 2;
-            }
-        }
+//         std::cout << "SIZE: " << std::setw(10) << size_str
+//                   << " TIME/ACCESS: " << std::setw(15) << time_per_access;
 
-        if (first_iteration) {
-            std::cout << " (base)";
-            first_iteration = false;
-        }
+//         // Сравнительные итерации
+//         if (!first_iteration) {
+//             // Сравнение с предыдущей итерацией
+//             double percent_increase = ((time_per_access - prev_time) / prev_time) * 100.0;
+//             std::cout << " (+" << std::setw(6) << std::setprecision(2) << percent_increase << "%)";
+//             std::cout << std::fixed << std::setprecision(16); // Восстанавливаем точность
 
-        std::cout << std::endl;
-        free_cache();
+//             if (percent_increase >= 30) {
+//                 std::cout << std::endl;
+//                 free_cache();
+//                 // If reach boundary => last step was legal
+//                 return buf_size / 2;
+//             }
+//         }
 
-        prev_time = time_per_access;
-    }
-    return 0;
-}
+//         if (first_iteration) {
+//             std::cout << " (base)";
+//             first_iteration = false;
+//         }
 
-static size_t round_to_pow2(size_t value) {
-    size_t lower = 1;
-    while (lower * 2 <= value)
-        lower *= 2;
-    size_t upper = lower * 2;
-    // При равенстве дистанций выбираем меньший
-    return (value - lower <= upper - value) ? lower : upper;
-}
+//         std::cout << std::endl;
+//         free_cache();
 
-static size_t high_precise_capacity(size_t csize) {
-    const int ITERATIONS = 1000;
-    std::vector<size_t> results;
+//         prev_time = time_per_access;
+//     }
+//     return 0;
+// }
 
-    for (int i = 0; i < ITERATIONS; i++)
-        results.push_back(capacity(csize));
+// static size_t round_to_pow2(size_t value) {
+//     size_t lower = 1;
+//     while (lower * 2 <= value)
+//         lower *= 2;
+//     size_t upper = lower * 2;
+//     // При равенстве дистанций выбираем меньший
+//     return (value - lower <= upper - value) ? lower : upper;
+// }
 
-    std::unordered_map<size_t, size_t> freq;
-    for (size_t r : results) 
-        freq[r]++;
+// static size_t high_precise_capacity(size_t csize) {
+//     const int ITERATIONS = 1000;
+//     std::vector<size_t> results;
 
-    double weighted_sum = 0.0;
-    size_t total_count = 0;
-    for (auto& [val, count] : freq) {
-        weighted_sum += (double)val * count;
-        total_count += count;
-    }
+//     for (int i = 0; i < ITERATIONS; i++)
+//         results.push_back(capacity(csize));
 
-    double weighted_avg = weighted_sum / total_count;
-    return round_to_pow2((size_t)weighted_avg);
-}
+//     std::unordered_map<size_t, size_t> freq;
+//     for (size_t r : results) 
+//         freq[r]++;
+
+//     double weighted_sum = 0.0;
+//     size_t total_count = 0;
+//     for (auto& [val, count] : freq) {
+//         weighted_sum += (double)val * count;
+//         total_count += count;
+//     }
+
+//     double weighted_avg = weighted_sum / total_count;
+//     return round_to_pow2((size_t)weighted_avg);
+// }
 
 /*
 Пусть у нас прямое отображение => если повторяется индекс и разный тэг, то доступ будет долгим из-за вытеснения
@@ -232,80 +234,80 @@ Estimate1:
 2 - cache_lines_count - 1 => X - way
 cache_lines_count => direct mapping
 */
-static void compute_assoc(size_t line_size, size_t cache_size) {
-    std::cout << "\n========== ASSOCIATIVITY TEST ==========\n";
-    std::cout << std::fixed << std::setprecision(16);
+// static void compute_assoc(size_t line_size, size_t cache_size) {
+//     std::cout << "\n========== ASSOCIATIVITY TEST ==========\n";
+//     std::cout << std::fixed << std::setprecision(16);
 
-    // Условный максимум
-    const size_t MAX_ASSOC = 32;
+//     // Условный максимум
+//     const size_t MAX_ASSOC = 32;
 
-    const size_t BUF_SIZE = cache_size * 2;
-    buf = (uint64_t*)malloc(BUF_SIZE);
-    if (!buf) {
-        std::cerr << "Memory allocation failed\n";
-        return;
-    }
+//     const size_t BUF_SIZE = cache_size * 2;
+//     buf = (uint64_t*)malloc(BUF_SIZE);
+//     if (!buf) {
+//         std::cerr << "Memory allocation failed\n";
+//         return;
+//     }
 
-    // Шаг выбираем равный размеру кэша: попадание в один и тот же set
-    const size_t STEP = cache_size / sizeof(uint64_t);
+//     // Шаг выбираем равный размеру кэша: попадание в один и тот же set
+//     const size_t STEP = cache_size / sizeof(uint64_t);
 
-    bool first_iteration = true;
-    double prev_time = 0.0;
+//     bool first_iteration = true;
+//     double prev_time = 0.0;
 
-    for (size_t assoc = 1; assoc <= MAX_ASSOC; assoc++) {
-        // Подготавливаем паттерн: assoc конфликтующих адресов
-        for (size_t i = 0; i < assoc; i++) {
-            buf[i * STEP] = (i + 1) * STEP;
-        }
-        buf[(assoc - 1) * STEP] = 0; // замыкаем цикл
+//     for (size_t assoc = 1; assoc <= MAX_ASSOC; assoc++) {
+//         // Подготавливаем паттерн: assoc конфликтующих адресов
+//         for (size_t i = 0; i < assoc; i++) {
+//             buf[i * STEP] = (i + 1) * STEP;
+//         }
+//         buf[(assoc - 1) * STEP] = 0; // замыкаем цикл
 
-        // Измеряем время обхода
-        MEASURE_TIME(current_time, {
-            size_t idx = 0;
-            for (int i = 0; i < 10000; i++) {
-                idx = buf[idx];
-                opaque(buf[idx]);
-            }
-        });
+//         // Измеряем время обхода
+//         MEASURE_TIME(current_time, {
+//             size_t idx = 0;
+//             for (int i = 0; i < 10000; i++) {
+//                 idx = buf[idx];
+//                 opaque(buf[idx]);
+//             }
+//         });
 
-        std::cout << "ASSOC: " << std::setw(2) << assoc
-                  << " TIME: " << std::setw(15) << current_time;
+//         std::cout << "ASSOC: " << std::setw(2) << assoc
+//                   << " TIME: " << std::setw(15) << current_time;
 
-        if (!first_iteration) {
-            double percent_increase = ((current_time - prev_time) / prev_time) * 100.0;
-            std::cout << " (+" << std::setw(6)
-                      << std::setprecision(2) << percent_increase << "%)";
-            std::cout << std::fixed << std::setprecision(16);
+//         if (!first_iteration) {
+//             double percent_increase = ((current_time - prev_time) / prev_time) * 100.0;
+//             std::cout << " (+" << std::setw(6)
+//                       << std::setprecision(2) << percent_increase << "%)";
+//             std::cout << std::fixed << std::setprecision(16);
 
-            if (percent_increase >= 50.0) {
-                std::cout << "\n==> Estimated associativity: "
-                          << (assoc - 1) << "-way\n";
-                free(buf);
-                return;
-            }
-        } else {
-            std::cout << " (base)";
-            first_iteration = false;
-        }
+//             if (percent_increase >= 50.0) {
+//                 std::cout << "\n==> Estimated associativity: "
+//                           << (assoc - 1) << "-way\n";
+//                 free(buf);
+//                 return;
+//             }
+//         } else {
+//             std::cout << " (base)";
+//             first_iteration = false;
+//         }
 
-        std::cout << std::endl;
-        prev_time = current_time;
-    }
+//         std::cout << std::endl;
+//         prev_time = current_time;
+//     }
 
-    std::cout << "\n==> Associativity >= " << MAX_ASSOC << "-way (not detected)\n";
-    free(buf);
-}
+//     std::cout << "\n==> Associativity >= " << MAX_ASSOC << "-way (not detected)\n";
+//     free(buf);
+// }
 
 int main() {
-    size_t csize = data_size();
+    size_t csize = cache_line_length();
 
-    size_t capacity = high_precise_capacity(csize);
+    // size_t capacity = high_precise_capacity(csize);
 
     std::cout << "\n========== RESULTS ==========\n";
-    std::cout << "CAPACITY (WEIGHTED AVG):" << std::setw(10)
-              << FORMAT_SIZE(capacity) << std::endl;
+    // std::cout << "CAPACITY (WEIGHTED AVG):" << std::setw(10)
+    //           << FORMAT_SIZE(capacity) << std::endl;
     std::cout << "COHERENCE CACHE SIZE:" << std::setw(12)
               << FORMAT_SIZE(csize) << std::endl;
 
-    compute_assoc(64, capacity);
+    // compute_assoc(64, capacity);
 }
