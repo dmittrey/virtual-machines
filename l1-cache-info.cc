@@ -198,8 +198,9 @@ static size_t cache_capacity(size_t actual_stride) {
         // Нормализуем на количество доступов, получаем время на один доступ
         double time_per_access = measure_time / (elems_cnt * 10000);
 
-        // Форматируем размер буфера для вывода
-        std::string size_str = FORMAT_SIZE(elems_cnt * sizeof(size_t));
+        // Форматируем реальный размер буфера (учитываем stride)
+        size_t buf_bytes = elems_cnt * actual_stride * sizeof(size_t);
+        std::string size_str = FORMAT_SIZE(buf_bytes);
 
         std::cout << std::fixed << std::setprecision(16)
                   << "SIZE: " << std::setw(10) << size_str
@@ -215,8 +216,8 @@ static size_t cache_capacity(size_t actual_stride) {
             if (percent_increase >= 50) {
                 std::cout << std::endl;
                 free(buf);
-                // If reach boundary => last step was legal
-                return elems_cnt * sizeof(size_t);
+                // возвращаем реальный размер в байтах (с учётом stride) / 2
+                return buf_bytes / 2;
             }
         }
 
