@@ -12,10 +12,10 @@ extern void opaque(uint64_t);
 #define DEFAULT_BUF_SIZE (10000 * sizeof(uint64_t))
 
 #define MEASURE_TIME(var_name, code) \
-    const auto start = std::chrono::steady_clock::now(); \
+    const auto start_##var_name = std::chrono::steady_clock::now(); \
     code \
-    const auto end = std::chrono::steady_clock::now(); \
-    const double var_name = (end - start).count()
+    const auto end_##var_name = std::chrono::steady_clock::now(); \
+    const double var_name = (end_##var_name - start_##var_name).count()
 
 #define FORMAT_SIZE(buf_size) \
     ((buf_size) < 1024 ? std::to_string(buf_size) + " B" : \
@@ -208,6 +208,94 @@ static size_t high_precise_capacity(size_t csize) {
     return round_to_pow2((size_t)weighted_avg);
 }
 
+/*
+Пусть у нас прямое отображение => если повторяется индекс и разный тэг, то доступ будет долгим из-за вытеснения
+
+| tag(X бит) | index(9 бит) | offset(6 бит) |
+
+После вычисления capacity и длины линейки мы точно знаем длину индекса и offset,
+следовательно можем попробовать замер:
+Estimate0:
+    addr0 = | tag(y) | index(x)     | offset(-) |
+    addr1 = | tag(y) | index(x + 1) | offset(-) |
+    // Читаем 100'000 раз
+Estimate1:
+    addr0 = | tag(y)     | index(x) | offset(-) |
+    addr1 = | tag(y + 1) | index(x) | offset(-) |
+    // Читаем 100'000
+
+Если у меня прямое отображение то ухудшение скорости доступа будет ощутимым
+Иначе либо X-way assoc либо полно-ассоциативный кэш
+
+хм, а если допустим просто наращивать шаг, то есть от 1 до 32
+1 => полностью ассоциативный кэш (в set могут быть разные тэги)
+2 - cache_lines_count - 1 => X - way
+cache_lines_count => direct mapping
+*/
+static void compute_assoc(size_t line_size, size_t cache_size) {
+    std::cout << "\n========== ASSOCIATIVITY TEST ==========\n";
+    std::cout << std::fixed << std::setprecision(16);
+
+    // Условный максимум
+    const size_t MAX_ASSOC = 32;
+
+    const size_t BUF_SIZE = cache_size * 2;
+    buf = (uint64_t*)malloc(BUF_SIZE);
+    if (!buf) {
+        std::cerr << "Memory allocation failed\n";
+        return;
+    }
+
+    // Шаг выбираем равный размеру кэша: попадание в один и тот же set
+    const size_t STEP = cache_size / sizeof(uint64_t);
+
+    bool first_iteration = true;
+    double prev_time = 0.0;
+
+    for (size_t assoc = 1; assoc <= MAX_ASSOC; assoc++) {
+        // Подготавливаем паттерн: assoc конфликтующих адресов
+        for (size_t i = 0; i < assoc; i++) {
+            buf[i * STEP] = (i + 1) * STEP;
+        }
+        buf[(assoc - 1) * STEP] = 0; // замыкаем цикл
+
+        // Измеряем время обхода
+        MEASURE_TIME(current_time, {
+            size_t idx = 0;
+            for (int i = 0; i < 10000; i++) {
+                idx = buf[idx];
+                opaque(buf[idx]);
+            }
+        });
+
+        std::cout << "ASSOC: " << std::setw(2) << assoc
+                  << " TIME: " << std::setw(15) << current_time;
+
+        if (!first_iteration) {
+            double percent_increase = ((current_time - prev_time) / prev_time) * 100.0;
+            std::cout << " (+" << std::setw(6)
+                      << std::setprecision(2) << percent_increase << "%)";
+            std::cout << std::fixed << std::setprecision(16);
+
+            if (percent_increase >= 50.0) {
+                std::cout << "\n==> Estimated associativity: "
+                          << (assoc - 1) << "-way\n";
+                free(buf);
+                return;
+            }
+        } else {
+            std::cout << " (base)";
+            first_iteration = false;
+        }
+
+        std::cout << std::endl;
+        prev_time = current_time;
+    }
+
+    std::cout << "\n==> Associativity >= " << MAX_ASSOC << "-way (not detected)\n";
+    free(buf);
+}
+
 int main() {
     size_t csize = data_size();
 
@@ -218,4 +306,6 @@ int main() {
               << FORMAT_SIZE(capacity) << std::endl;
     std::cout << "COHERENCE CACHE SIZE:" << std::setw(12)
               << FORMAT_SIZE(csize) << std::endl;
+
+    compute_assoc(64, capacity);
 }
