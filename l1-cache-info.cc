@@ -9,6 +9,8 @@
 
 extern void opaque(uint64_t);
 
+#define VERIFY_ITER_COUNT 10000
+
 #define MEASURE_TIME(var_name, code) \
     const auto start_##var_name = std::chrono::steady_clock::now(); \
     code \
@@ -76,7 +78,7 @@ static size_t cache_line_length() {
             std::cout << " (+" << std::setw(6) << std::setprecision(2) << percent_increase << "%)";
 
             // В два раза вырос latency
-            if (percent_increase >= 100) {
+            if (percent_increase >= 50) {
                 std::cout << std::endl;
                 free(buf);
 
@@ -87,15 +89,36 @@ static size_t cache_line_length() {
         // Первая итерация
         if (!first_time) {
             std::cout << " (base)";
-            first_time = measure_time;
         }
 
         std::cout << std::endl;
+        first_time = measure_time;
         free(buf);
     }
 
     return 0;
 }
+
+// static size_t high_precise_cache_line_length() {
+//     std::vector<size_t> results;
+
+//     for (int i = 0; i < VERIFY_ITER_COUNT; i++)
+//         results.push_back(cache_line_length());
+
+//     std::unordered_map<size_t, size_t> freq;
+//     for (size_t r : results) 
+//         freq[r]++;
+
+//     double weighted_sum = 0.0;
+//     size_t total_count = 0;
+//     for (auto& [val, count] : freq) {
+//         weighted_sum += (double)val * count;
+//         total_count += count;
+//     }
+
+//     double weighted_avg = weighted_sum / total_count;
+//     return round_to_pow2((size_t)weighted_avg);
+// }
 
 // void prepare_random_cyclic_buffer(size_t buf_size) {
 //     size_t WORD_NUM = buf_size / sizeof(uint64_t);
