@@ -154,7 +154,7 @@ static size_t high_precise_cache_line_length() {
 size_t* prepare_random_cyclic_buffer(size_t elems_cnt, size_t stride) {
     size_t buf_size = elems_cnt * stride * sizeof(uint64_t);
 
-    size_t *buf = (size_t*)malloc(buf_size);
+    size_t *buf = (size_t*)aligned_alloc(buf_size, buf_size);
     
     // Создаем случайный паттерн обхода (держим в голове stride)
     std::vector<size_t> indices(elems_cnt);
@@ -178,12 +178,19 @@ size_t* prepare_random_cyclic_buffer(size_t elems_cnt, size_t stride) {
     return buf;
 }
 
-static size_t cache_capacity(size_t actual_stride) {
+static size_t cache_capacity() {
     double prev_time = 0.0;
+    double max_increase = 0.0;
+    size_t max_capacity = 1;
 
-    // Начинаем с размера кэш-линии и увеличиваем до 64 МБ(эвристика)
-    for (size_t elems_cnt = 1; elems_cnt < 64 * 1024 * 1024; elems_cnt *= 2) {        
-        size_t *buf = prepare_random_cyclic_buffer(elems_cnt, actual_stride);
+    for (size_t elems_cnt = 1; elems_cnt < (1 * 1024 * 1024) / sizeof(size_t); elems_cnt *= 2) {        
+        size_t *buf = prepare_random_cyclic_buffer(elems_cnt, 1);
+
+        size_t idx = 0;
+        for (size_t i = 0; i < elems_cnt; i++) {
+            idx = buf[idx];
+            opaque(buf[idx]);
+        }
 
         MEASURE_TIME(measure_time, {
             size_t idx = 0;
@@ -198,7 +205,7 @@ static size_t cache_capacity(size_t actual_stride) {
         double time_per_access = measure_time / (elems_cnt * 10000);
 
         // Форматируем реальный размер буфера (учитываем stride)
-        size_t buf_bytes = elems_cnt * actual_stride * sizeof(size_t);
+        size_t buf_bytes = elems_cnt * sizeof(size_t);
         std::string size_str = FORMAT_SIZE(buf_bytes);
 
         std::cout << std::fixed << std::setprecision(16)
@@ -212,11 +219,9 @@ static size_t cache_capacity(size_t actual_stride) {
             std::cout << " (+" << std::setw(6) << std::setprecision(2) << percent_increase << "%)";
             std::cout << std::fixed << std::setprecision(16); // Восстанавливаем точность
 
-            if (percent_increase >= 50) {
-                std::cout << std::endl;
-                free(buf);
-                // возвращаем реальный размер в байтах (с учётом stride) / 2
-                return buf_bytes / 2;
+            if (percent_increase > max_increase) {
+                max_increase = percent_increase;
+                max_capacity = buf_bytes / 2;
             }
         }
 
@@ -229,14 +234,14 @@ static size_t cache_capacity(size_t actual_stride) {
 
         prev_time = time_per_access;
     }
-    return 0;
+    return max_capacity;
 }
 
-static size_t high_precise_capacity(size_t actual_stride) {
+static size_t high_precise_capacity() {
     std::vector<size_t> results;
 
     for (int i = 0; i < VERIFY_ITER_COUNT; i++)
-        results.push_back(cache_capacity(actual_stride));
+        results.push_back(cache_capacity());
 
     std::unordered_map<size_t, size_t> freq;
     for (size_t r : results)
@@ -398,10 +403,10 @@ static size_t high_precise_assoc(size_t cache_size, size_t line_size) {
 }
 
 int main() {
+    size_t capacity = high_precise_capacity();
+    // size_t capacity = 32768;
     size_t length_size = high_precise_cache_line_length();
     // size_t length_size = 64;
-    size_t capacity = high_precise_capacity(length_size / sizeof(size_t));
-    // size_t capacity = 32768;
     size_t nways = high_precise_assoc(capacity, length_size);
 
     std::cout << "\n========== RESULTS ==========\n";
