@@ -9,7 +9,7 @@
 
 extern void opaque(uint64_t);
 
-const size_t VERIFY_ITER_COUNT = 3;
+const size_t VERIFY_ITER_COUNT = 10;
 
 const size_t DEFAULT_TRANSITION_COUNT = 1024 * 1024;
 
@@ -56,6 +56,21 @@ static size_t cache_line_length(size_t capacity) {
         size_t *buf = sequence_cyclic_buffer(capacity / sizeof(size_t), stride);
 
         size_t acc = 0;
+
+        // --- flush cache ---
+        size_t cache_flush_size = capacity * 8;
+        size_t *flush_buf = (size_t*)malloc(cache_flush_size);
+        for (size_t i = 0; i < cache_flush_size / sizeof(size_t); ++i) {
+            flush_buf[i] = i;
+            opaque(flush_buf[i]);
+        }
+        size_t tmp = 0;
+        for (size_t i = 0; i < cache_flush_size / sizeof(size_t); ++i)
+            tmp += flush_buf[i];
+        opaque(tmp);
+        free(flush_buf);
+        // --- end flush ---
+
         MEASURE_TIME(measure_time, {
             size_t idx = buf[0];
             do {
@@ -77,6 +92,7 @@ static size_t cache_line_length(size_t capacity) {
 
             // Если первый значительный рост, возвращаем stride
             if (percent_increase >= THRESHOLD_PERCENT) {
+                std::cout << std::endl;
                 free(buf);
                 return stride * sizeof(size_t);
             }
@@ -105,7 +121,7 @@ static size_t round_to_pow2(size_t value) {
 static size_t high_precise_cache_line_length(size_t capacity) {
     std::vector<size_t> results;
 
-    for (int i = 0; i < VERIFY_ITER_COUNT; i++)
+    for (int i = 0; i < VERIFY_ITER_COUNT * 100; i++)
         results.push_back(cache_line_length(capacity));
 
     std::unordered_map<size_t, size_t> freq;
