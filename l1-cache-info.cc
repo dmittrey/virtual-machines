@@ -9,7 +9,7 @@
 
 extern void opaque(uint64_t);
 
-const size_t VERIFY_ITER_COUNT = 10;
+const size_t VERIFY_ITER_COUNT = 3;
 
 const size_t DEFAULT_TRANSITION_COUNT = 1024 * 1024;
 
@@ -49,53 +49,49 @@ size_t* sequence_cyclic_buffer(size_t transitions_count, size_t stride) {
 }
 
 static size_t cache_line_length(size_t capacity) {
-    double prev_time = 0.0;
-    double max_increase = 0.0;
-    size_t max_stride = 1;
+    double prev_time_per_access = 0.0;
+    const double THRESHOLD_PERCENT = 50.0; // порог для "яркого выброса"
 
     for (size_t stride = 1; stride < 2048; stride *= 2) {
-        size_t *buf = sequence_cyclic_buffer(DEFAULT_TRANSITION_COUNT, stride);
+        size_t *buf = sequence_cyclic_buffer(capacity / sizeof(size_t), stride);
 
+        size_t acc = 0;
         MEASURE_TIME(measure_time, {
-            for (int i = 0; i < 100; i++) {
-                opaque(buf[0]);
-                size_t idx = buf[0];
-                do {
-                    idx = buf[idx];
-                    opaque(buf[idx]);
-                } while (idx != 0);
-            }
+            size_t idx = buf[0];
+            do {
+                idx = buf[idx];
+                acc += idx;
+            } while (idx != 0);
+            opaque(acc);
         });
-        
+
+        double time_per_access = measure_time / (capacity / sizeof(size_t));
+
         std::cout << std::fixed << std::setprecision(16)
                   << "STRIDE: " << std::setw(5) << stride
-                  << " TIME : " << std::setw(15) << measure_time / (DEFAULT_TRANSITION_COUNT * 100);
+                  << " TIME : " << std::setw(15) << time_per_access;
 
-        // Сравнительные итерации
-        if (prev_time) {
-            // Сравнение с первой итерацией
-            double percent_increase = ((measure_time - prev_time) / prev_time) * 100.0;
+        if (prev_time_per_access > 0.0) {
+            double percent_increase = ((time_per_access - prev_time_per_access) / prev_time_per_access) * 100.0;
             std::cout << " (+" << std::setw(6) << std::setprecision(2) << percent_increase << "%)";
 
-            // В два раза вырос latency
-            if (percent_increase > max_increase) {
-                max_increase = percent_increase;
-                max_stride = stride;
+            // Если первый значительный рост, возвращаем stride
+            if (percent_increase >= THRESHOLD_PERCENT) {
+                free(buf);
+                return stride * sizeof(size_t);
             }
-        }
-        
-        // Первая итерация
-        if (!prev_time) {
+        } else {
             std::cout << " (base)";
         }
 
         std::cout << std::endl;
-        prev_time = measure_time;
+        prev_time_per_access = time_per_access;
         free(buf);
     }
 
-    return max_stride * sizeof(size_t);
+    return 0; // не нашли выброса
 }
+
 
 static size_t round_to_pow2(size_t value) {
     size_t lower = 1;
@@ -403,8 +399,8 @@ static size_t high_precise_assoc(size_t cache_size, size_t line_size) {
 }
 
 int main() {
-    // size_t capacity = high_precise_capacity();
-    size_t capacity = 32768;
+    size_t capacity = high_precise_capacity();
+    // size_t capacity = 32768;
     size_t length_size = high_precise_cache_line_length(capacity);
     // size_t length_size = 64;
     size_t nways = high_precise_assoc(capacity, length_size);
