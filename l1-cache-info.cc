@@ -9,7 +9,9 @@
 
 extern void opaque(uint64_t);
 
-#define VERIFY_ITER_COUNT 20
+const size_t VERIFY_ITER_COUNT = 20;
+
+const size_t DEFAULT_TRANSITION_COUNT = 100 * 1000;
 
 #define MEASURE_TIME(var_name, code) \
     const auto start_##var_name = std::chrono::steady_clock::now(); \
@@ -47,7 +49,6 @@ size_t* sequence_cyclic_buffer(size_t transitions_count, size_t stride) {
 }
 
 static size_t cache_line_length() {
-    const size_t DEFAULT_TRANSITION_COUNT = 100 * 1000;
     double prev_time = 0.0;
 
     for (size_t stride = 1; stride < 2048; stride *= 2) {
@@ -302,81 +303,114 @@ Estimate1:
 2 - cache_lines_count - 1 => X - way
 cache_lines_count => direct mapping
 */
-// static void compute_assoc(size_t line_size, size_t cache_size) {
-//     std::cout << "\n========== ASSOCIATIVITY TEST ==========\n";
-//     std::cout << std::fixed << std::setprecision(16);
+static size_t compute_assoc(size_t cache_size, size_t line_size) {
+    const size_t accesses = 200000;
+    const size_t repeats = 10;
+    std::vector<double> times;
 
-//     // Условный максимум
-//     const size_t MAX_ASSOC = 32;
+    size_t stride = cache_size / sizeof(size_t); // шаг, чтобы все линии в одном set
 
-//     const size_t BUF_SIZE = cache_size * 2;
-//     buf = (uint64_t*)malloc(BUF_SIZE);
-//     if (!buf) {
-//         std::cerr << "Memory allocation failed\n";
-//         return;
-//     }
+    for (size_t ways = 1; ways <= 32; ways++) {
+        size_t *buf = sequence_cyclic_buffer(ways, stride);
 
-//     // Шаг выбираем равный размеру кэша: попадание в один и тот же set
-//     const size_t STEP = cache_size / sizeof(uint64_t);
+        // Погоняем по буферу чтобы прогреть кэш и нарваться на побольше конфликтов
+        MEASURE_TIME(measure_time, {
+            size_t idx = 0;
+            for (size_t r = 0; r < repeats; ++r) {
+                for (size_t i = 0; i < accesses; ++i) {
+                    idx = buf[idx];
+                    opaque(idx);
+                }
+            }
+        });
 
-//     bool first_iteration = true;
-//     double prev_time = 0.0;
+        double time_per_access = (measure_time / (repeats * accesses));
+        times.push_back(time_per_access);
 
-//     for (size_t assoc = 1; assoc <= MAX_ASSOC; assoc++) {
-//         // Подготавливаем паттерн: assoc конфликтующих адресов
-//         for (size_t i = 0; i < assoc; i++) {
-//             buf[i * STEP] = (i + 1) * STEP;
-//         }
-//         buf[(assoc - 1) * STEP] = 0; // замыкаем цикл
+        std::cout << std::fixed << std::setprecision(16)
+                  << "WAYS: " << std::setw(10) << ways
+                  << " TIME/ACCESS: " << std::setw(15) << time_per_access;
 
-//         // Измеряем время обхода
-//         MEASURE_TIME(current_time, {
-//             size_t idx = 0;
-//             for (int i = 0; i < 10000; i++) {
-//                 idx = buf[idx];
-//                 opaque(buf[idx]);
-//             }
-//         });
+        if (ways > 1) {
+            double prev = times[ways - 2];
+            double delta = ((time_per_access - prev) / prev) * 100.0;
+            std::cout << "  (" << std::setw(6) << delta << "%)";
+            if (delta > 30.0) {
+                std::cout << "  <-- likely conflict" << std::endl;
+                std::cout << "\nEstimated cache associativity ≈ "
+                          << (ways - 1) << "-way" << std::endl;
+                free(buf);
+                return ways - 1;
+            }
+        } else {
+            std::cout << "  (base)";
+        }
 
-//         std::cout << "ASSOC: " << std::setw(2) << assoc
-//                   << " TIME: " << std::setw(15) << current_time;
+        std::cout << std::endl;
+        free(buf);
+    }
 
-//         if (!first_iteration) {
-//             double percent_increase = ((current_time - prev_time) / prev_time) * 100.0;
-//             std::cout << " (+" << std::setw(6)
-//                       << std::setprecision(2) << percent_increase << "%)";
-//             std::cout << std::fixed << std::setprecision(16);
+    std::cout << "\nAssociativity not detected up to 32-way" << std::endl;
+    return 32;
+}
 
-//             if (percent_increase >= 50.0) {
-//                 std::cout << "\n==> Estimated associativity: "
-//                           << (assoc - 1) << "-way\n";
-//                 free(buf);
-//                 return;
-//             }
-//         } else {
-//             std::cout << " (base)";
-//             first_iteration = false;
-//         }
+static size_t high_precise_assoc(size_t cache_size, size_t line_size) {
+    std::vector<size_t> results;
 
-//         std::cout << std::endl;
-//         prev_time = current_time;
-//     }
+    for (int i = 0; i < VERIFY_ITER_COUNT; i++)
+        results.push_back(compute_assoc(cache_size, line_size));
 
-//     std::cout << "\n==> Associativity >= " << MAX_ASSOC << "-way (not detected)\n";
-//     free(buf);
-// }
+    std::unordered_map<size_t, size_t> freq;
+    for (size_t r : results)
+        freq[r]++;
+
+    // Ищем наиболее часто встречающееся значение
+    size_t mode_val = 0;
+    size_t max_count = 0;
+    for (auto& [val, count] : freq) {
+        if (count > max_count) {
+            max_count = count;
+            mode_val = val;
+        }
+    }
+
+    // Если распределение равномерное (все встречаются 1 раз), тогда усредняем
+    bool all_unique = true;
+    for (auto& [val, count] : freq) {
+        if (count > 1) {
+            all_unique = false;
+            break;
+        }
+    }
+
+    if (all_unique) {
+        // fallback к средневзвешенному, если равномерное распределение
+        double weighted_sum = 0.0;
+        size_t total_count = 0;
+        for (auto& [val, count] : freq) {
+            weighted_sum += (double)val * count;
+            total_count += count;
+        }
+        double weighted_avg = weighted_sum / total_count;
+        return round_to_pow2((size_t)weighted_avg);
+    } else {
+        // иначе возвращаем моду (самое частое значение)
+        return mode_val;
+    }
+}
 
 int main() {
-    // size_t length_size = high_precise_cache_line_length();
-    size_t length_size = 64;
-
+    size_t length_size = high_precise_cache_line_length();
+    // size_t length_size = 64;
     size_t capacity = high_precise_capacity(length_size / sizeof(size_t));
+    // size_t capacity = 32768;
+    size_t nways = high_precise_assoc(capacity, length_size);
 
     std::cout << "\n========== RESULTS ==========\n";
-    std::cout << "CAPACITY:" << std::setw(10)
+    std::cout << "CAPACITY:" << std::setw(20)
               << FORMAT_SIZE(capacity) << std::endl;
-    std::cout << "COHERENCE CACHE SIZE:" << std::setw(12)
+    std::cout << "CACHE LINE SIZE:" << std::setw(12)
               << FORMAT_SIZE(length_size) << std::endl;
-
-    // compute_assoc(64, capacity);
+    std::cout << "ASSOCIATIVE:" << std::setw(13)
+              << nways << "-Ways" << std::endl;
 }
