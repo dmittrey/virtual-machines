@@ -9,6 +9,8 @@
 
 extern void opaque(uint64_t);
 
+constexpr size_t max_page_size = size_t(2) * 1024 * 1024;
+
 const size_t VERIFY_ITER_COUNT = 10;
 
 const size_t DEFAULT_TRANSITION_COUNT = 1024 * 1024;
@@ -36,7 +38,7 @@ size_t* sequence_cyclic_buffer(size_t transitions_count, size_t stride) {
     // Создаем буффер чтобы вместить столько элементов сколько хотим переходов + компенсируем пропуски stride
     size_t buf_size = transitions_count * sizeof(size_t) * stride;
 
-    size_t *buf = (size_t*)malloc(buf_size);
+    size_t *buf = (size_t*)aligned_alloc(max_page_size, buf_size);
     
     // Инициализируем циклический буффер
     size_t word_cnt = buf_size / sizeof(size_t);
@@ -166,7 +168,7 @@ static size_t high_precise_cache_line_length(size_t capacity) {
 size_t* prepare_random_cyclic_buffer(size_t elems_cnt, size_t stride) {
     size_t buf_size = elems_cnt * stride * sizeof(uint64_t);
 
-    size_t *buf = (size_t*)aligned_alloc(buf_size, buf_size);
+    size_t *buf = (size_t*)aligned_alloc(max_page_size, buf_size);
     
     // Создаем случайный паттерн обхода (держим в голове stride)
     std::vector<size_t> indices(elems_cnt);
