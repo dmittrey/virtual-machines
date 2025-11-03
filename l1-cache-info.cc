@@ -48,7 +48,7 @@ size_t* sequence_cyclic_buffer(size_t transitions_count, size_t stride) {
     return buf;
 }
 
-static size_t cache_line_length() {
+static size_t cache_line_length(size_t capacity) {
     double prev_time = 0.0;
     double max_increase = 0.0;
     size_t max_stride = 1;
@@ -106,11 +106,11 @@ static size_t round_to_pow2(size_t value) {
     return (value - lower <= upper - value) ? lower : upper;
 }
 
-static size_t high_precise_cache_line_length() {
+static size_t high_precise_cache_line_length(size_t capacity) {
     std::vector<size_t> results;
 
     for (int i = 0; i < VERIFY_ITER_COUNT; i++)
-        results.push_back(cache_line_length());
+        results.push_back(cache_line_length(capacity));
 
     std::unordered_map<size_t, size_t> freq;
     for (size_t r : results)
@@ -403,9 +403,9 @@ static size_t high_precise_assoc(size_t cache_size, size_t line_size) {
 }
 
 int main() {
-    size_t capacity = high_precise_capacity();
-    // size_t capacity = 32768;
-    size_t length_size = high_precise_cache_line_length();
+    // size_t capacity = high_precise_capacity();
+    size_t capacity = 32768;
+    size_t length_size = high_precise_cache_line_length(capacity);
     // size_t length_size = 64;
     size_t nways = high_precise_assoc(capacity, length_size);
 
