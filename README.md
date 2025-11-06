@@ -39,3 +39,10 @@ make clean
 ./l1-info — релизная версия
 
 ./l1-info-debug — отладочная версия
+```
+
+## Запуск
+
+```bash
+taskset 1 ./l1-info
+```
