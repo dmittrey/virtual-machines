@@ -1,4 +1,4 @@
-# 🧠 L1 Cache Info
+# L1 Cache Info
 
 ## Описание
 
