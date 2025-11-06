@@ -454,7 +454,7 @@ int main() {
     std::cout << "Results: \n" 
               << "Capacity: " << FORMAT_SIZE(cache_capacity_est.first) << "\n"
               << "Associative: " << cache_assoc << "-way" << "\n"
-              << "Line Size: " << line_size << std::endl;
+              << "Line Size: " << FORMAT_SIZE(line_size) << std::endl;
 
     return 0;
 }
