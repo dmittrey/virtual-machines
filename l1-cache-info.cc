@@ -294,7 +294,7 @@ size_t high_precise_cache_association(size_t cache_capacity, double cache_latenc
     constexpr size_t test_runs_max = 11;
 
     std::unordered_map<size_t, size_t> occurrences;
-    size_t mode;
+    size_t mode = 0;
     size_t mode_frequency = 0;
 
     for (size_t iterations = 1; iterations <= test_runs_max; ++iterations) {
@@ -411,7 +411,7 @@ size_t high_precise_cache_line_size(std::mt19937_64& rng, size_t cache_capacity)
     constexpr size_t test_runs_max = 25;
 
     std::unordered_map<size_t, size_t> occurrences;
-    size_t mode;
+    size_t mode = 0;
     size_t mode_frequency = 0;
 
     for (size_t iterations = 1; iterations <= test_runs_max; ++iterations) {
